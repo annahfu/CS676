@@ -1,0 +1,413 @@
+import os
+import re
+import json
+import math
+import numpy as np
+import pandas as pd
+from urllib.parse import urlparse
+from scipy.sparse import hstack, csr_matrix
+
+from sklearn.model_selection import train_test_split
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.linear_model import Ridge
+from sklearn.metrics import r2_score, mean_squared_error
+
+# =====================================================
+# CONFIG FLAGS (read from environment variables)
+# -----------------------------------------------------
+# Use environment variables so that a user can turn
+# features on/off or scale them *without changing code*.
+#
+# ENABLE_DOMAIN_NUDGE = "1" (default) → enable URL-based nudging
+# ENABLE_DOMAIN_NUDGE = "0"           → disable URL-based nudging
+#
+# DOMAIN_NUDGE_SCALE = float (default 1.0) → multiplier to adjust
+#                                           how strong the domain nudges are.
+# =====================================================
+ENABLE_DOMAIN_NUDGE = os.getenv("ENABLE_DOMAIN_NUDGE", "1") == "1"
+try:
+    DOMAIN_NUDGE_SCALE = float(os.getenv("DOMAIN_NUDGE_SCALE", "1.0"))
+except ValueError:
+    DOMAIN_NUDGE_SCALE = 1.0  # safe fallback if env var is invalid
+
+# =====================================================
+# 1) RULE-BASED SCORER
+# -----------------------------------------------------
+# These dictionaries represent "cue words" that help or hurt credibility.
+# - POSITIVE_CUES: adds points when detected
+# - NEGATIVE_CUES: subtracts points when detected
+#
+# Rule-based scores are useful because they are transparent
+# and work even for unseen text (no ML training required).
+# =====================================================
+POSITIVE_CUES = {
+    "significantly": 6,
+    "dramatically": 6,
+    "consistently": 5,
+    "reliably": 5,
+    "clearly": 4,
+    "evidence": 5,
+    "dataset": 4,
+    "replicated": 6,
+    "peer reviewed": 8,
+    "statistically significant": 8,
+    "benchmark": 4,
+    "confidence interval": 8,
+    "p<": 8,
+    "%": 3,   # presence of percentages suggests quantitative evidence
+}
+
+NEGATIVE_CUES = {
+    "breaks": -12,
+    "harms": -10,
+    "confuses": -8,
+    "delays": -6,
+    "barely": -5,
+    "maybe": -6,
+    "might": -6,
+    "could": -5,
+    "rumor": -12,
+    "clickbait": -15,
+    "unverified": -12,
+    "???": -8,
+    "!!!": -6,
+}
+
+def rule_based_score(text: str) -> float:
+    """
+    Compute a credibility score using simple heuristics.
+    The score is clipped to [0, 100].
+
+    Logic:
+    - Start at 60 (optimistic baseline).
+    - Add/subtract points for positive/negative cue words.
+    - Add points if numbers are present.
+    - Subtract if many ALL-CAPS words (shouting).
+    - Subtract if excessive punctuation (!!!, ???).
+    - Penalize very short text; reward moderately detailed text.
+    """
+    if not isinstance(text, str) or not text.strip():
+        return 50.0  # neutral fallback for missing/invalid input
+
+    t = text.lower()
+    score = 60.0  # baseline
+
+    # Add/subtract for cue words
+    for cue, pts in POSITIVE_CUES.items():
+        if cue in t:
+            score += pts
+    for cue, pts in NEGATIVE_CUES.items():
+        if cue in t:
+            score += pts
+
+    # Reward presence of numbers
+    if re.search(r"\b\d+(\.\d+)?\b", t):
+        score += 3
+
+    # Penalize many ALL-CAPS words
+    words = re.findall(r"[A-Za-z]{3,}", text)
+    caps_tokens = sum(1 for w in words if len(w) >= 3 and w.isupper())
+    score -= min(caps_tokens * 2.0, 10.0)
+
+    # Penalize excessive punctuation
+    exclam = text.count("!")
+    qmarks = text.count("?")
+    score -= min(exclam * 1.5 + qmarks * 1.0, 12.0)
+
+    # Length adjustment
+    n_tokens = len(re.findall(r"\w+", t))
+    if n_tokens < 6:
+        score -= 6
+    elif 12 <= n_tokens <= 30:
+        score += 4
+
+    return float(np.clip(score, 0, 100))
+
+
+# =====================================================
+# 2) LOAD DATASET
+# -----------------------------------------------------
+# Train the ML model on a sample CSV file.
+# File must have:
+# - a column called "sentence" or "text"
+# - a numeric column called "score"
+# =====================================================
+df = pd.read_csv("simulated_data.csv")
+
+text_col = "sentence" if "sentence" in df.columns else "text"
+if text_col not in df.columns or "score" not in df.columns:
+    raise ValueError("CSV must have 'score' and either 'sentence' or 'text'.")
+
+X_text = df[text_col].astype(str)
+y = df["score"].astype(float)
+
+# =====================================================
+# 3) FEATURE ENGINEERING
+# -----------------------------------------------------
+# Combine:
+# - TF-IDF vector of words and bigrams
+# - Rule-based score as a numeric feature
+# =====================================================
+vectorizer = TfidfVectorizer(max_features=1000, ngram_range=(1, 2))
+X_tfidf = vectorizer.fit_transform(X_text)
+
+rule_scores = X_text.apply(rule_based_score).to_numpy().reshape(-1, 1)
+X_rules = csr_matrix(rule_scores)
+
+# Final feature matrix = [TF-IDF | rule_score]
+X = hstack([X_tfidf, X_rules], format="csr")
+
+# =====================================================
+# 4) TRAIN MODEL
+# -----------------------------------------------------
+# Use Ridge regression:
+# - Handles high-dimensional sparse features well.
+# - Produces continuous output (0–100).
+# =====================================================
+X_train, X_test, y_train, y_test = train_test_split(
+    X, y, test_size=0.2, random_state=42
+)
+
+model = Ridge(alpha=1.0, random_state=42)
+model.fit(X_train, y_train)
+
+# Predictions
+y_pred_ml = model.predict(X_test)
+
+# Rules-only baseline
+X_text_train, X_text_test = train_test_split(X_text, test_size=0.2, random_state=42)
+y_pred_rules = X_text_test.apply(rule_based_score).to_numpy()
+
+# Blended predictions = 70% ML + 30% Rules (tunable)
+BLEND_W = 0.7
+y_pred_blend = BLEND_W * y_pred_ml + (1 - BLEND_W) * y_pred_rules
+
+# Simple evaluation function
+def report(label, y_true, y_hat):
+    print(f"{label}")
+    print("  R²:", round(r2_score(y_true, y_hat), 4))
+    print("  MSE:", round(mean_squared_error(y_true, y_hat), 4))
+    print()
+
+y_test_array = y_test.to_numpy()
+report("ML only", y_test_array, y_pred_ml)
+report("Rules only", y_test_array, y_pred_rules)
+report("Blended", y_test_array, y_pred_blend)
+
+# =====================================================
+# 5) CORE PREDICTOR
+# -----------------------------------------------------
+# Used inside the API to generate predictions for new inputs.
+# Returns ml_only, rules_only, blended predictions.
+# =====================================================
+def predict_sentences(sentences, blend_weight=0.7):
+    tfidf_feats = vectorizer.transform(sentences)
+    rule_feats = csr_matrix(np.array([rule_based_score(s) for s in sentences]).reshape(-1, 1))
+    X_new = hstack([tfidf_feats, rule_feats], format="csr")
+
+    ml_pred = model.predict(X_new)
+    rule_pred = np.array([rule_based_score(s) for s in sentences])
+    blended = blend_weight * ml_pred + (1 - blend_weight) * rule_pred
+
+    return {"ml_only": ml_pred, "rules_only": rule_pred, "blended": blended}
+
+# =====================================================
+# 6) URL HELPERS + DOMAIN NUDGE
+# -----------------------------------------------------
+# Functions classify a URL’s domain and apply
+# a small credibility adjustment (e.g., +10 for .edu).
+#
+# Controlled by config flags:
+# - ENABLE_DOMAIN_NUDGE (on/off)
+# - DOMAIN_NUDGE_SCALE (scales strength)
+# =====================================================
+def _is_valid_url(url: str) -> bool:
+    """Check if a string looks like a valid HTTP/HTTPS URL."""
+    try:
+        parsed = urlparse(url)
+        return bool(parsed.scheme in ("http", "https") and parsed.netloc)
+    except Exception:
+        return False
+
+def _get_host(url: str) -> str:
+    try:
+        return urlparse(url).netloc.lower()
+    except Exception:
+        return ""
+
+def _url_domain_category_and_points(url: str) -> tuple[str, float]:
+    """
+    Classify URL into a category and return (category, points).
+    Points will be scaled by DOMAIN_NUDGE_SCALE.
+    """
+    if not url or not _is_valid_url(url):
+        return ("invalid", 0.0)
+
+    host = _get_host(url)
+
+    if any(s in host for s in (".edu", ".ac.", ".gov")):
+        return ("academic_or_gov", 10.0)
+
+    reputable_academic = (
+        "nature.com", "science.org", "sciencedirect.com", "springer.com",
+        "wiley.com", "ieee.org", "acm.org", "nejm.org", "thelancet.com",
+        "jamanetwork.com", "royalsociety", "cambridge.org", "oup.com",
+        "cell.com", "pnas.org"
+    )
+    if any(s in host for s in reputable_academic):
+        return ("publisher_reputable", 8.0)
+
+    if "wikipedia.org" in host:
+        return ("wikipedia", 5.0)
+
+    major_news = (
+        "nytimes.com", "washingtonpost.com", "bbc.com", "reuters.com",
+        "apnews.com", "wsj.com", "ft.com", "economist.com"
+    )
+    if any(s in host for s in major_news):
+        return ("news_major", 2.0)
+
+    if any(s in host for s in ("medium.com", "substack.com", "blogspot.", "wordpress.")):
+        return ("platform_blog", -5.0)
+
+    return ("other", 0.0)
+
+# =====================================================
+# 7) EXPLANATION BUILDER
+# -----------------------------------------------------
+# Generates a human-readable explanation string that
+# describes why a score was assigned.
+# =====================================================
+def _explain(text: str, ml_score: float, rule_score: float, blended: float, url: str | None = None) -> str:
+    t = (text or "").lower()
+    cues_pos = [c for c in POSITIVE_CUES if c in t][:3]
+    cues_neg = [c for c in NEGATIVE_CUES if c in t][:3]
+    has_num = bool(re.search(r"\b\d+(\.\d+)?\b", t))
+    many_punct = (text.count("!") + text.count("?")) >= 3
+    caps_tokens = sum(1 for w in re.findall(r"[A-Za-z]{3,}", text) if w.isupper())
+
+    parts = []
+    parts.append(f"blended={blended:.2f} (ml={ml_score:.2f}, rules={rule_score:.2f})")
+    if cues_pos:
+        parts.append("pos cues: " + ", ".join(cues_pos))
+    if cues_neg:
+        parts.append("neg cues: " + ", ".join(cues_neg))
+    if has_num:
+        parts.append("numbers detected")
+    if many_punct:
+        parts.append("excess punctuation")
+    if caps_tokens >= 3:
+        parts.append("ALL-CAPS words")
+
+    if url:
+        valid = _is_valid_url(url)
+        parts.append("url=" + ("valid" if valid else "invalid"))
+        if valid:
+            cat, pts = _url_domain_category_and_points(url)
+            sign = "+" if pts >= 0 else ""
+            parts.append(f"domain={cat}({sign}{int(pts * DOMAIN_NUDGE_SCALE)})")
+    return " | ".join(parts)
+
+# =====================================================
+# 8) API FUNCTION
+# -----------------------------------------------------
+# score_api() validates inputs, calls predictors, and
+# returns a JSON-friendly object with:
+# - raw ML/rules/blended scores
+# - domain adjustments
+# - final score
+# - explanation string
+# - error list (if any)
+# =====================================================
+def score_api(payload: dict, *, blend_weight: float = 0.7) -> dict:
+    if not isinstance(payload, dict):
+        raise TypeError("payload must be a dict")
+
+    items = payload.get("items", [])
+    if not isinstance(items, list):
+        raise TypeError("payload['items'] must be a list")
+
+    ids, texts, urls, errs = [], [], [], []
+    for idx, it in enumerate(items):
+        row_errs = []
+        if not isinstance(it, dict):
+            it = {}
+            row_errs.append("item_not_dict")
+
+        # ID
+        _id = it.get("id")
+        if not isinstance(_id, str):
+            _id = f"row-{idx}"
+        ids.append(_id)
+
+        # Text
+        txt = it.get("text")
+        if not isinstance(txt, str) or not txt.strip():
+            row_errs.append("missing_or_invalid_text")
+            txt = ""
+        texts.append(txt)
+
+        # URL
+        url = it.get("url", "")
+        if not isinstance(url, str):
+            row_errs.append("invalid_url_type")
+            url = ""
+        elif url and not _is_valid_url(url):
+            row_errs.append("malformed_url")
+        urls.append(url)
+        errs.append(row_errs)
+
+    # Predictions from ML + rules
+    out = predict_sentences(texts, blend_weight=blend_weight)
+    ml, rb, bl = out["ml_only"], out["rules_only"], out["blended"]
+
+    # Convert to safe floats
+    def _f(x):
+        try:
+            v = float(x)
+            if math.isnan(v) or math.isinf(v):
+                return float("nan")
+            return v
+        except Exception:
+            return float("nan")
+
+    results = []
+    for i in range(len(texts)):
+        ml_i, rb_i, bl_i = _f(ml[i]), _f(rb[i]), _f(bl[i])
+
+        # Apply domain nudge if enabled
+        url_cat = "none"
+        url_adj = 0.0
+        if ENABLE_DOMAIN_NUDGE and urls[i]:
+            cat, base_pts = _url_domain_category_and_points(urls[i])
+            url_cat = cat
+            url_adj = float(base_pts * DOMAIN_NUDGE_SCALE)
+
+        # Final score = blended + domain adjustment
+        final_score = float(np.clip(bl_i + url_adj, 0.0, 100.0))
+
+        results.append({
+            "id": ids[i],
+            "text": texts[i],
+            "url": urls[i],
+            "scores": {  # transparency: raw components
+                "ml_only": ml_i,
+                "rules_only": rb_i,
+                "blended": bl_i
+            },
+            "url_category": url_cat,
+            "url_adjustment": url_adj,
+            "score": final_score,  # preferred field
+            "explanation": _explain(texts[i], ml_i, rb_i, bl_i, urls[i]),
+            "errors": errs[i],
+        })
+
+    return {
+        "results": results,
+        "meta": {
+            "count": len(results),
+            "blend_weight": float(blend_weight),
+            "enable_domain_nudge": ENABLE_DOMAIN_NUDGE,
+            "domain_nudge_scale": DOMAIN_NUDGE_SCALE,
+        }
+    }
