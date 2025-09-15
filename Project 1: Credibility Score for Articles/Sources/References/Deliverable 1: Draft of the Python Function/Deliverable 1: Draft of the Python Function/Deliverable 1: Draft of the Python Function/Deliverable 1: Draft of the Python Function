@@ -12,6 +12,74 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.linear_model import Ridge
 from sklearn.metrics import r2_score, mean_squared_error
 
+def generate_fake_data(n_rows=200, seed=42, out_path="simulated_data.csv"):
+    """
+    Create a DataFrame with two columns:
+      - 'text': a short fake sentence
+      - 'score': integer score from 0 to 100
+    and export it to `out_path` as CSV.
+    """
+    random.seed(seed)
+    np.random.seed(seed)
+
+    subjects = [
+        "The product", "Our team", "This model", "The feature", "The service",
+        "Customer feedback", "The interface", "The campaign", "The dataset", "The update"
+    ]
+    verbs = [
+        "significantly improves", "barely changes", "often breaks", "consistently boosts",
+        "slightly harms", "greatly simplifies", "occasionally confuses",
+        "reliably accelerates", "sometimes delays", "clearly enhances"
+    ]
+    objects = [
+        "user satisfaction", "conversion rates", "load time", "accuracy", "engagement",
+        "retention", "search results", "reporting speed", "onboarding", "data quality"
+    ]
+    adverbs = [
+        "notably", "marginally", "surprisingly", "rarely", "frequently",
+        "dramatically", "subtly", "steadily", "barely", "clearly"
+    ]
+
+    # Words with a basic sentiment weight to influence the score a bit
+    pos_words = {"improves": 12, "boosts": 15, "simplifies": 10, "enhances": 12, "reliably": 8, "dramatically": 10, "clearly": 6, "steadily": 5}
+    neg_words = {"breaks": -18, "harms": -15, "confuses": -10, "delays": -8, "barely": -6}
+
+    texts, scores = [], []
+    for _ in range(n_rows):
+        s = random.choice(subjects)
+        v = random.choice(verbs)
+        o = random.choice(objects)
+        adv = random.choice(adverbs)
+
+        # Build a simple sentence
+        sentence = f"{s} {v} {o} {adv}."
+        texts.append(sentence)
+
+        # Heuristic score: start around 60 with some noise, then nudge by word weights
+        base = 60 + np.random.normal(loc=0, scale=12)
+        tweak = 0
+        for w, wgt in pos_words.items():
+            if w in v or w in adv:
+                tweak += wgt
+        for w, wgt in neg_words.items():
+            if w in v or w in adv:
+                tweak += wgt
+
+        score = int(np.clip(base + tweak + np.random.normal(0, 6), 0, 100))
+        scores.append(score)
+
+    df = pd.DataFrame({"text": texts, "score": scores})
+
+    # Save to CSV (no index)
+    df.to_csv(out_path, index=False)
+
+    return df
+
+if __name__ == "__main__":
+    df = generate_fake_data(n_rows=300, seed=123, out_path="simulated_data.csv")
+    print(df.head())
+    print("\nSaved to simulated_data.csv")
+
 # =====================================================
 # CONFIG FLAGS (read from environment variables)
 # -----------------------------------------------------
@@ -411,3 +479,4 @@ def score_api(payload: dict, *, blend_weight: float = 0.7) -> dict:
             "domain_nudge_scale": DOMAIN_NUDGE_SCALE,
         }
     }
+
