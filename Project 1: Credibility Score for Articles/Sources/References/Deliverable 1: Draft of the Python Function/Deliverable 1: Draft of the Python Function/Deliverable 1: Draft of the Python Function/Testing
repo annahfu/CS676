@@ -1,0 +1,46 @@
+def _self_test():
+    # Basic schema + error handling
+    payload = {"items": [
+        {"id": "ok1", "text": "Peer reviewed dataset shows 12% lift.", "url": "https://example.edu/paper"},
+        {"id": "bad_text", "text": "", "url": "www.noscheme.com"},   # invalid text + malformed URL
+        {"id": "bad_types", "text": None, "url": 999},               # wrong types
+        {"id": "ok2", "text": "This might be unverified!!!", "url": "http://blog.example.com/post"},
+    ]}
+    out = score_api(payload, blend_weight=0.7)
+
+    # Basic assertions
+    assert isinstance(out, dict) and "results" in out and "meta" in out
+    assert out["meta"]["count"] == len(payload["items"])
+    for r in out["results"]:
+        assert all(k in r for k in ("id", "text", "url", "scores", "score", "explanation", "errors"))
+        assert all(k in r["scores"] for k in ("ml_only", "rules_only", "blended"))
+        # Score must be a float
+        assert isinstance(r["score"], float)
+
+    # Check that errors were flagged for bad rows
+    r_bad_text = next(r for r in out["results"] if r["id"] == "bad_text")
+    assert "missing_or_invalid_text" in r_bad_text["errors"]
+    assert "malformed_url" in r_bad_text["errors"]
+
+    r_bad_types = next(r for r in out["results"] if r["id"] == "bad_types")
+    assert "missing_or_invalid_text" in r_bad_types["errors"]
+    assert "invalid_url_type" in r_bad_types["errors"]
+
+    # JSON-serializable
+    json.dumps(out)
+
+    print("SELF-TEST PASSED")
+
+if __name__ == "__main__":
+    # Run the existing demo
+    examples = [
+        {"id": "a1", "text": "Peer reviewed results show statistically significant improvement (p<0.05).", "url": "https://example.edu/paper"},
+        {"id": "a2", "text": "This clearly breaks and might be unverified!!!", "url": "http://blog.example.com/post"},
+        {"id": "a3", "text": "The update reliably improves reporting speed by 12%."},
+        {"id": "bad1", "text": "", "url": "www.noscheme.com"},
+        {"id": "bad2", "text": None, "url": 999},
+    ]
+    print(json.dumps(score_api({"items": examples}, blend_weight=BLEND_W), indent=2))
+
+    # Run the minimal initial tests
+    _self_test()
