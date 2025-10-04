@@ -44,7 +44,7 @@ class CredConfig(BaseModel):
     """
     Central, strongly-typed configuration for the model.
 
-    Why we use this:
+    Why use this:
     - Keeps experiments reproducible (values are captured in the saved artifact)
     - Lets you tune behavior without editing code (you can instantiate with different values)
     - Pydantic validates types/ranges so bad configs fail fast
