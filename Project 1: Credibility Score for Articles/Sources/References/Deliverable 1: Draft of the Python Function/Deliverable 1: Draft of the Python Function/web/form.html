@@ -1,0 +1,21 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Ask & Score</title>
+<style>body{font-family:system-ui;margin:2rem;max-width:900px}</style>
+<input id="q" placeholder="Ask a question..." style="width:70%">
+<button onclick="go()">Search & Score</button>
+<pre id="out"></pre>
+<script>
+async function go(){
+  const q = document.getElementById('q').value;
+  const r = await fetch('/search_and_score', {
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({query:q, k:5})
+  });
+  const data = await r.json();
+  document.getElementById('out').textContent = JSON.stringify(data.results.map(x => ({
+    rank: x.rank, title: x.title, url: x.url, score: x.score, label: x.label
+  })), null, 2);
+}
+</script>
