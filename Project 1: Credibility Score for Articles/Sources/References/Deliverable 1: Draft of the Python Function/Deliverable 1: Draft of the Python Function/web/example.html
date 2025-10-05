@@ -1,0 +1,27 @@
+
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <title>Credibility Widget Demo</title>
+    <link rel="stylesheet" href="credibility_widget.css">
+  </head>
+  <body style="max-width: 900px; margin: 2rem auto; padding: 0 1rem;">
+    <h1>Credibility Widget Demo</h1>
+    <div id="cred-container"></div>
+
+    <script src="credibility_widget.js"></script>
+    <script>
+      // Example results (simulate API response)
+      const results = [
+        {rank: 1, title: "Systematic Review", url: "https://journal.example.org", snippet: "This review examines ...", score: 84, label: "High",
+          explanation: {ml_score: 78.6, rules_score: 90, domain_nudge: 8, thresholds: [36, 68],
+            top_positive: [["peer reviewed", 0.9],["dataset",0.4]], top_negative: [["miracle",-0.7]]}},
+        {rank: 2, title: "Blog Post", url: "https://blog.example.com", snippet: "Miracle cure!!! ...", score: 32, label: "Low",
+          explanation: {ml_score: 30, rules_score: 28, domain_nudge: -4, thresholds: [36, 68],
+            top_positive: [], top_negative: [["miracle",-0.8],["cure",-0.6]]}}
+      ];
+      renderCredibilityList(document.getElementById('cred-container'), results);
+    </script>
+  </body>
+</html>
