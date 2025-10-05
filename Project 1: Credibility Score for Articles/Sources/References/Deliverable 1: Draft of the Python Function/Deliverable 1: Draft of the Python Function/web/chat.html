@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Credibility Chat</title>
+  <link rel="stylesheet" href="chat.css">
+</head>
+<body>
+  <div class="app">
+    <header class="top">
+      <div class="title">Credibility Chat</div>
+      <div class="subtitle">Ask a question or paste a link/text. I’ll search or score and explain why.</div>
+    </header>
+
+    <main id="chat" class="chat"></main>
+
+    <footer class="inputbar">
+      <div class="mode">
+        <label><input type="radio" name="mode" value="search" checked> Search & score web</label>
+        <label><input type="radio" name="mode" value="score"> Score pasted text/link</label>
+      </div>
+      <div class="controls">
+        <textarea id="msg" rows="2" placeholder="Type your question (search) or paste content (score)..."></textarea>
+        <button id="send">Send</button>
+      </div>
+      <div class="hint">Tip: In “Search & score web”, I return a ranked list with credibility badges. In “Score”, I assess your pasted input.</div>
+    </footer>
+  </div>
+
+  <script src="chat.js"></script>
+</body>
+</html>
