@@ -1,0 +1,263 @@
+import os
+import re
+import gradio as gr
+from dataclasses import dataclass, field
+from typing import List, Dict, Any, Optional
+
+# Optional OpenAI client via HF Repo Secret: OPENAI_API_KEY
+def get_openai_client():
+    key = os.getenv("OPENAI_API_KEY", "")
+    if not key:
+        return None
+    try:
+        from openai import OpenAI
+        return OpenAI(api_key=key)
+    except Exception:
+        return None
+
+# Personas (Name — Type)
+PERSONAS = {
+    "Priya — Accessibility Researcher": "You are Priya, an Accessibility Researcher. Be empathetic, concrete, and WCAG-aware. Offer inclusive, low-cognitive-load suggestions.",
+    "Joe — Privacy & Security Lead": "You are Joe, a Privacy & Security Lead. Be direct. Minimize data collection. Consider GDPR/HIPAA, encryption, DPIA, and threat modeling.",
+    "Jane — Growth PM": "You are Jane, a Growth PM. Be analytical. Focus on adoption, onboarding, conversion, activation, and A/B test design.",
+    "Omar — Performance Engineer": "You are Omar, a Performance Engineer. Be pragmatic. Prioritize reliability, latency (p95), observability, and simple solutions.",
+    "Ava — Patient Teacher": "You are Ava, a Patient Teacher. Explain clearly in small steps; avoid jargon; give examples and quick wins.",
+    "Leo — Power User": "You are Leo, a Power User. Assume advanced knowledge; dive into shortcuts, power features, and expert workflows.",
+    "Noah — Skeptical Analyst": "You are Noah, a Skeptical Analyst. Challenge assumptions; ask for evidence and metrics; highlight risks and unknowns.",
+    "Sofia — Creative Designer": "You are Sofia, a Creative Designer. Suggest elegant UX/UI patterns, visual hierarchy improvements, and clarity."
+}
+PERSONA_OPTIONS = list(PERSONAS.keys())
+
+# Simple LLM abstraction (fixed temperature internally)
+class LLM:
+    def __init__(self):
+        self.client = get_openai_client()
+        self.temperature = 0.7
+        self.model = "gpt-4o-mini"
+
+    def generate(self, prompt: str) -> str:
+        if self.client is None:
+            # Rule-based fallback so app still runs without a key
+            tips = []
+            t = prompt.lower()
+            if any(k in t for k in ["privacy","gdpr","hipaa","encryption","security"]):
+                tips.append("Minimize data collection; complete a DPIA; ensure encryption in transit and at rest.")
+            if any(k in t for k in ["latency","performance","p95","slo","reliability"]):
+                tips.append("Budget p95 latency, add synthetic monitors, and set SLO-based alerts.")
+            if any(k in t for k in ["onboarding","activation","conversion","adoption","kpi"]):
+                tips.append("Define an activation KPI and design an A/B test with clear success criteria.")
+            if not tips:
+                tips.append("Ship a small experiment and interview 5 users for qualitative insights.")
+            return " ".join(tips)
+        # OpenAI path
+        try:
+            resp = self.client.chat.completions.create(
+                model=self.model,
+                messages=[{"role":"user","content":prompt}],
+                temperature=self.temperature
+            )
+            return resp.choices[0].message.content
+        except Exception as e:
+            return f"(LLM error; fallback) Recommend: run a small A/B test, collect metrics, and iterate. Details: {e}"
+
+@dataclass
+class Agent:
+    label: str              # "Priya — Accessibility Researcher"
+    system: str             # style/preamble from PERSONAS
+    llm: LLM
+    def respond(self, feature: str, transcript: List[Dict[str,str]]) -> str:
+        context = "\n".join([f"{m['role']}: {m['content']}" for m in transcript[-6:]])
+        name = self.label.split(" — ")[0]
+        prompt = f"""{self.system}
+Feature under review: {feature}
+
+Recent discussion:
+{context}
+
+Respond concisely (<=120 words) as {name}. Add one concrete, net-new suggestion. Avoid repeating prior points."""
+        return self.llm.generate(prompt)
+
+@dataclass
+class JudgeConfig:
+    min_rounds: int = 2
+    consensus_threshold: float = 0.72  # internal only
+    stop_on_consensus: bool = True
+    stop_on_redundancy: bool = True
+
+class Judge:
+    def __init__(self, cfg: JudgeConfig):
+        self.cfg = cfg
+
+    def _consensus_score(self, texts: List[str]) -> float:
+        if not texts:
+            return 0.0
+        bags = [set(re.findall(r"[a-zA-Z]{4,}", t.lower())) for t in texts]
+        inter = set.intersection(*bags) if bags else set()
+        union = set.union(*bags) if bags else set()
+        return len(inter) / max(1, len(union))
+
+    def _redundancy_score(self, transcript: List[Dict[str, str]]) -> float:
+        tail = " ".join(m["content"].lower() for m in transcript[-10:])
+        bigrams = re.findall(r"\b([a-z]{3,}\s+[a-z]{3,})\b", tail)
+        if not bigrams:
+            return 0.0
+        from collections import Counter
+        c = Counter(bigrams)
+        total = sum(c.values())
+        repeats = sum(v - 1 for v in c.values() if v > 1)
+        return repeats / max(1, total)
+
+    # Formal natural-language reasons (no numbers surfaced)
+    def _reason_consensus(self) -> str:
+        return ("Decision: stop — The panel has reached a shared position on the key points and next actions, "
+                "and recent comments introduce no materially new perspective.")
+
+    def _reason_redundancy(self) -> str:
+        return ("Decision: stop — The latest turns repeat previously stated ideas without adding concrete new angles; "
+                "the discussion appears complete for now.")
+
+    def _reason_max_rounds(self, max_rounds: int) -> str:
+        return (f"Decision: stop — The conversation has reached the planned limit of {max_rounds} rounds; "
+                "further turns are unlikely to change the outcome.")
+
+    def _reason_continue(self) -> str:
+        return ("Decision: continue — There remain open disagreements or unexplored angles worth probing "
+                "before closing the discussion.")
+
+    def decide(self, round_idx: int, round_texts: List[str], transcript: List[Dict[str, str]], max_rounds: int):
+        consensus = self._consensus_score(round_texts)
+        redundancy = self._redundancy_score(transcript)
+        rounds_done = (round_idx + 1) >= max_rounds
+        enough_rounds = (round_idx + 1) >= self.cfg.min_rounds
+
+        if rounds_done:
+            return True, self._reason_max_rounds(max_rounds)
+
+        if self.cfg.stop_on_consensus and enough_rounds and consensus >= self.cfg.consensus_threshold:
+            return True, self._reason_consensus()
+
+        if self.cfg.stop_on_redundancy and enough_rounds and redundancy >= 0.35:
+            return True, self._reason_redundancy()
+
+        return False, self._reason_continue()
+
+class Manager:
+    def __init__(self, max_rounds: int = 5, show_reasoning: bool = True):
+        self.llm = LLM()
+        self.judge = Judge(JudgeConfig())
+        self.max_rounds = max_rounds
+        self.show_reasoning = show_reasoning
+        self.transcript: List[Dict[str,str]] = []
+        self.agents: List[Agent] = []
+        self.feature = ""
+        self.round_idx = 0
+        self.judge_agent: Optional[Agent] = None
+
+    def bootstrap(self, feature: str, interviewer_label: str, interviewee_label: str, judge_label: str):
+        self.feature = feature.strip()
+        self.agents = [
+            Agent(interviewer_label, PERSONAS[interviewer_label], self.llm),
+            Agent(interviewee_label, PERSONAS[interviewee_label], self.llm),
+        ]
+        self.judge_agent = Agent(judge_label, PERSONAS[judge_label], self.llm)
+        self.transcript = [{"role": "system", "content": "Start evaluating the feature."}]
+        self.round_idx = 0
+
+    def step(self):
+        msgs = []
+        round_texts = []
+
+        # Interviewer asks
+        q = self.agents[0].respond(self.feature, self.transcript)
+        self.transcript.append({"role": self.agents[0].label.split(" — ")[0], "content": q})
+        msgs.append([self.agents[0].label.split(" — ")[0], q])
+        round_texts.append(q)
+
+        # Interviewee answers
+        a = self.agents[1].respond(self.feature + f"\nQuestion: {q}", self.transcript)
+        self.transcript.append({"role": self.agents[1].label.split(" — ")[0], "content": a})
+        msgs.append([self.agents[1].label.split(" — ")[0], a])
+        round_texts.append(a)
+
+        # Judge persona provides a concise evaluation/rationale
+        if self.show_reasoning and self.judge_agent is not None:
+            judge_name = self.judge_agent.label.split(" — ")[0]
+            eval_prompt = f"""{self.judge_agent.system}
+You are acting as the judge of this discussion.
+
+Feature under review:
+{self.feature}
+
+Latest exchange:
+Interviewer: {q}
+Interviewee: {a}
+
+Evaluate succinctly:
+- Rating: X/10
+- Strength: one bullet
+- Risk: one bullet
+- Recommendation: one bullet (what to do next, or what to clarify)
+Keep it under 100 words, and be specific."""
+            judge_eval = self.llm.generate(eval_prompt)
+            self.transcript.append({"role": f"Judge ({judge_name})", "content": judge_eval})
+            msgs.append([f"Judge ({judge_name})", judge_eval])
+
+        # Natural-language STOP/CONTINUE decision (formal note)
+        done, human_note = self.judge.decide(self.round_idx, round_texts, self.transcript, self.max_rounds)
+        self.transcript.append({"role": "Judge", "content": human_note})
+        msgs.append(["Judge", human_note])
+
+        self.round_idx += 1
+        return msgs, done
+
+# -------- Gradio UI --------
+with gr.Blocks(fill_height=True, theme=gr.themes.Soft()) as demo:
+    gr.Markdown("# Multi-Agent Simulator")
+
+    with gr.Row():
+        with gr.Column(scale=1):
+            feature = gr.Textbox(
+                label="Feature / Idea Under Review",
+                lines=6,
+                value="An AR try-on widget for a retail app that scans feet and previews shoe fit; also prompts bundle upsells."
+            )
+            interviewer = gr.Dropdown(label="Interviewer Persona", choices=PERSONA_OPTIONS, value=PERSONA_OPTIONS[2])
+            interviewee = gr.Dropdown(label="Interviewee Persona", choices=PERSONA_OPTIONS, value=PERSONA_OPTIONS[0])
+            judge_sel = gr.Dropdown(label="Judge Persona", choices=PERSONA_OPTIONS, value=PERSONA_OPTIONS[6])
+            max_rounds = gr.Slider(1, 10, value=5, step=1, label="Max Rounds")
+            start = gr.Button("Start Conversation")
+            step = gr.Button("Next Round")
+        with gr.Column(scale=1):
+            chat = gr.Chatbot(label="Conversation", height=520)
+            judge_note = gr.Markdown("")
+    state = gr.State({"mgr": None, "history": []})
+
+    def on_start(feature_text, i_label, e_label, j_label, max_r):
+        mgr = Manager(max_rounds=int(max_r), show_reasoning=True)
+        mgr.bootstrap(feature_text, i_label, e_label, j_label)
+        msgs, done = mgr.step()
+        state = {"mgr": mgr, "history": msgs}
+        last = msgs[-1][1] if msgs else ""
+        return msgs, state, last
+
+    def on_step(state: dict):
+        mgr: Optional[Manager] = state.get("mgr") if isinstance(state, dict) else None
+        history = state.get("history", []) if isinstance(state, dict) else []
+        if not mgr:
+            return history, "No active conversation.", state
+        msgs, done = mgr.step()
+        history.extend(msgs)
+        last = msgs[-1][1] if msgs else ""
+        if done:
+            last += "\nThe judge has ended the discussion."
+        return history, last, {"mgr": mgr, "history": history}
+
+    start.click(
+        on_start,
+        inputs=[feature, interviewer, interviewee, judge_sel, max_rounds],
+        outputs=[chat, state, judge_note]
+    )
+    step.click(on_step, inputs=[state], outputs=[chat, judge_note, state])
+
+if __name__ == "__main__":
+    demo.queue().launch()
