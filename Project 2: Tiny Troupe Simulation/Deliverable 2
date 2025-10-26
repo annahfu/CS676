@@ -1,0 +1,833 @@
+import gradio as gr
+import json
+from typing import List, Dict, Tuple, Optional
+import time
+from datetime import datetime
+import random
+
+# For Hugging Face Spaces - handle OpenAI import gracefully
+try:
+    import openai
+    OPENAI_AVAILABLE = True
+except ImportError:
+    OPENAI_AVAILABLE = False
+
+# Predefined personas with detailed characteristics
+PREDEFINED_PERSONAS = {
+    # Original Personas
+    "Tech-Savvy Early Adopter": {
+        "demographics": "25-35, Urban, High income",
+        "characteristics": "Always looking for cutting-edge features, values innovation over stability",
+        "behavioral_patterns": "Quick to adopt, provides detailed technical feedback",
+        "communication_style": "Direct, technical, enthusiastic",
+        "personality_traits": ["curious", "enthusiastic", "solution-oriented", "social"],
+        "matches_well_with": ["Startup Founder", "Creative Designer", "Tech Skeptic"]
+    },
+    "Cautious Enterprise User": {
+        "demographics": "40-55, Corporate environment, Risk-averse",
+        "characteristics": "Prioritizes reliability and security, slow to adopt changes",
+        "behavioral_patterns": "Thorough testing before adoption, focuses on compliance",
+        "communication_style": "Formal, detailed, concerned with risks",
+        "personality_traits": ["analytical", "cautious", "thorough", "professional"],
+        "matches_well_with": ["Security Expert", "Budget-Conscious Manager", "Compliance Officer"]
+    },
+    "Casual Consumer": {
+        "demographics": "18-45, Various backgrounds, Price-conscious",
+        "characteristics": "Values simplicity and ease of use, limited technical knowledge",
+        "behavioral_patterns": "Quick judgments, influenced by UI/UX, expects intuitive design",
+        "communication_style": "Informal, straightforward, emotional",
+        "personality_traits": ["friendly", "practical", "easygoing", "relatable"],
+        "matches_well_with": ["Helpful Friend", "Patient Teacher", "Fellow Beginner"]
+    },
+    "Power User": {
+        "demographics": "30-50, Professional, Efficiency-focused",
+        "characteristics": "Expert-level knowledge, wants advanced features and customization",
+        "behavioral_patterns": "Deep feature exploration, creates workarounds",
+        "communication_style": "Precise, demanding, solution-oriented",
+        "personality_traits": ["efficient", "direct", "knowledgeable", "independent"],
+        "matches_well_with": ["Developer", "System Administrator", "Tech-Savvy Early Adopter"]
+    },
+    
+    # New Complementary Personas
+    "Startup Founder": {
+        "demographics": "28-40, Entrepreneur, Growth-focused",
+        "characteristics": "Moves fast, takes calculated risks, always looking for competitive advantage",
+        "behavioral_patterns": "Quick decisions, values speed over perfection, budget-conscious but willing to invest",
+        "communication_style": "Energetic, visionary, pragmatic",
+        "personality_traits": ["ambitious", "resourceful", "persuasive", "optimistic"],
+        "matches_well_with": ["Tech-Savvy Early Adopter", "Creative Designer", "Budget-Conscious Manager"]
+    },
+    "Creative Designer": {
+        "demographics": "24-38, Creative professional, Aesthetics-focused",
+        "characteristics": "Values beautiful, intuitive design, cares about user experience deeply",
+        "behavioral_patterns": "Visual thinker, passionate about UX/UI, advocates for simplicity",
+        "communication_style": "Expressive, visual, empathetic",
+        "personality_traits": ["creative", "detail-oriented", "empathetic", "artistic"],
+        "matches_well_with": ["Tech-Savvy Early Adopter", "Casual Consumer", "Patient Teacher"]
+    },
+    "Tech Skeptic": {
+        "demographics": "45-65, Traditional mindset, Change-resistant",
+        "characteristics": "Questions new technology, prefers proven solutions, concerned about complexity",
+        "behavioral_patterns": "Needs convincing, asks 'why change?', values reliability over innovation",
+        "communication_style": "Questioning, critical, cautious",
+        "personality_traits": ["skeptical", "practical", "traditional", "direct"],
+        "matches_well_with": ["Patient Teacher", "Tech-Savvy Early Adopter", "Cautious Enterprise User"]
+    },
+    "Helpful Friend": {
+        "demographics": "22-50, Supportive, People-focused",
+        "characteristics": "Wants everyone to succeed, explains things clearly, encouraging and positive",
+        "behavioral_patterns": "Asks clarifying questions, offers help, shares experiences",
+        "communication_style": "Warm, supportive, conversational",
+        "personality_traits": ["supportive", "patient", "friendly", "encouraging"],
+        "matches_well_with": ["Casual Consumer", "Fellow Beginner", "Tech Skeptic"]
+    },
+    "Patient Teacher": {
+        "demographics": "35-55, Educator mindset, Knowledge-sharing",
+        "characteristics": "Explains complex topics simply, patient with questions, wants others to learn",
+        "behavioral_patterns": "Uses analogies, breaks down concepts, checks for understanding",
+        "communication_style": "Clear, methodical, encouraging",
+        "personality_traits": ["patient", "knowledgeable", "articulate", "nurturing"],
+        "matches_well_with": ["Casual Consumer", "Tech Skeptic", "Fellow Beginner"]
+    },
+    "Fellow Beginner": {
+        "demographics": "18-40, Learning, Curious",
+        "characteristics": "New to the topic, asks lots of questions, eager to learn",
+        "behavioral_patterns": "Admits confusion, seeks clarification, learns from others",
+        "communication_style": "Humble, curious, relatable",
+        "personality_traits": ["curious", "humble", "enthusiastic", "relatable"],
+        "matches_well_with": ["Patient Teacher", "Helpful Friend", "Casual Consumer"]
+    },
+    "Budget-Conscious Manager": {
+        "demographics": "35-55, Management role, ROI-focused",
+        "characteristics": "Needs to justify costs, wants clear ROI, balances team needs with budget",
+        "behavioral_patterns": "Asks about pricing, compares alternatives, negotiates",
+        "communication_style": "Business-focused, practical, diplomatic",
+        "personality_traits": ["pragmatic", "analytical", "responsible", "diplomatic"],
+        "matches_well_with": ["Startup Founder", "Cautious Enterprise User", "Value Seeker"]
+    },
+    "Developer": {
+        "demographics": "25-45, Technical expert, Code-focused",
+        "characteristics": "Thinks in systems and APIs, wants documentation, values clean architecture",
+        "behavioral_patterns": "Asks technical questions, wants to see code, tests thoroughly",
+        "communication_style": "Technical, precise, logical",
+        "personality_traits": ["logical", "detail-oriented", "problem-solver", "methodical"],
+        "matches_well_with": ["Power User", "Tech-Savvy Early Adopter", "System Administrator"]
+    },
+    "System Administrator": {
+        "demographics": "30-50, IT operations, Stability-focused",
+        "characteristics": "Manages infrastructure, prioritizes uptime, needs reliability",
+        "behavioral_patterns": "Focuses on monitoring, backup, and disaster recovery",
+        "communication_style": "Technical, cautious, thorough",
+        "personality_traits": ["reliable", "cautious", "systematic", "protective"],
+        "matches_well_with": ["Developer", "Cautious Enterprise User", "Security Expert"]
+    },
+    "Security Expert": {
+        "demographics": "32-55, Cybersecurity specialist, Security-first",
+        "characteristics": "Identifies vulnerabilities, enforces best practices, risk-aware",
+        "behavioral_patterns": "Questions security measures, requires encryption, tests for exploits",
+        "communication_style": "Alert, technical, protective",
+        "personality_traits": ["vigilant", "thorough", "protective", "analytical"],
+        "matches_well_with": ["Cautious Enterprise User", "System Administrator", "Compliance Officer"]
+    },
+    "Compliance Officer": {
+        "demographics": "38-60, Legal/compliance background, Regulation-focused",
+        "characteristics": "Ensures regulatory compliance, documents everything, risk-averse",
+        "behavioral_patterns": "Reviews policies, requires documentation, checks regulations",
+        "communication_style": "Formal, precise, cautious",
+        "personality_traits": ["meticulous", "responsible", "formal", "thorough"],
+        "matches_well_with": ["Cautious Enterprise User", "Security Expert", "Budget-Conscious Manager"]
+    },
+    "Value Seeker": {
+        "demographics": "25-55, Practical, Deal-focused",
+        "characteristics": "Wants best bang for buck, compares options, looks for deals",
+        "behavioral_patterns": "Researches alternatives, negotiates, reads reviews",
+        "communication_style": "Practical, comparative, budget-aware",
+        "personality_traits": ["frugal", "practical", "research-oriented", "savvy"],
+        "matches_well_with": ["Budget-Conscious Manager", "Casual Consumer", "Startup Founder"]
+    }
+}
+
+class ConversationMessage:
+    """Represents a message in the conversation"""
+    def __init__(self, speaker: str, content: str, addressed_to: Optional[str] = None):
+        self.speaker = speaker
+        self.content = content
+        self.addressed_to = addressed_to
+        self.timestamp = datetime.now()
+
+class PersonaAgent:
+    def __init__(self, name: str, persona_details: Dict, api_key: str = None):
+        self.name = name
+        self.persona_details = persona_details
+        self.api_key = api_key
+        
+    def should_respond_directly(self, last_msg: ConversationMessage) -> bool:
+        """Check if this persona should respond to the last message"""
+        content_lower = last_msg.content.lower()
+        
+        # Check if addressed directly
+        if last_msg.addressed_to == self.name:
+            return True
+        
+        # Check if name mentioned
+        if self.name.lower() in content_lower:
+            return True
+        
+        # Check if it's a question
+        if '?' in last_msg.content:
+            return True
+            
+        return False
+        
+    def generate_response(self, topic: str, conversation_messages: List[ConversationMessage]) -> ConversationMessage:
+        """Generate a conversational response"""
+        
+        if not conversation_messages:
+            return self._generate_opening(topic)
+        
+        last_msg = conversation_messages[-1]
+        
+        if self.api_key and OPENAI_AVAILABLE:
+            content = self._generate_openai_response(topic, conversation_messages, last_msg)
+        else:
+            content = self._generate_rule_response(topic, conversation_messages, last_msg)
+        
+        # Determine who this is addressed to
+        addressed_to = last_msg.speaker if self.should_respond_directly(last_msg) else None
+        
+        return ConversationMessage(
+            speaker=self.name,
+            content=content,
+            addressed_to=addressed_to
+        )
+    
+    def _generate_opening(self, topic: str) -> ConversationMessage:
+        """Generate opening message"""
+        openings = {
+            "Tech-Savvy Early Adopter": [
+                "Hey everyone! I'm excited to discuss this. What do you all think?",
+                "This sounds interesting! Has anyone tried something like this before?",
+                "Cool topic! I'm curious to hear different perspectives on this."
+            ],
+            "Cautious Enterprise User": [
+                "Good morning. I'd like to understand this thoroughly. What are your thoughts?",
+                "Thank you for bringing this up. Let's discuss the details carefully.",
+                "I appreciate the opportunity to discuss this. What should we consider first?"
+            ],
+            "Casual Consumer": [
+                "Hey! So what's this about? I'm interested but not super technical.",
+                "Hi everyone! Can someone explain this simply? I want to understand.",
+                "Oh hi! This sounds cool but I'm a bit confused. Help me out?"
+            ],
+            "Power User": [
+                "Alright, let's dive into the specifics. What are the key details here?",
+                "Hey folks. I need to know if this fits my workflow. Thoughts?",
+                "Good to discuss this. I'm looking for something powerful and flexible."
+            ],
+            "Startup Founder": [
+                "Hey team! I love this energy. How can we move fast on this?",
+                "Alright, let's brainstorm! What's the quickest path to launch?",
+                "Exciting! How does this give us a competitive edge?"
+            ],
+            "Creative Designer": [
+                "Hi everyone! I'm thinking about the user experience here. What would delight users?",
+                "This could be beautiful! How do we make it intuitive and engaging?",
+                "Hey! Let's make sure this feels good to use. What's the emotional impact?"
+            ],
+            "Tech Skeptic": [
+                "Hold on. Why do we need this? What's wrong with the current solution?",
+                "I'm not convinced yet. Can someone explain why this is necessary?",
+                "Before we jump in, what are the risks here?"
+            ],
+            "Helpful Friend": [
+                "Hey everyone! I'm here to help. What questions do you have?",
+                "Hi! This seems interesting. How can I support you all in understanding this?",
+                "Let's figure this out together! What's confusing anyone?"
+            ],
+            "Patient Teacher": [
+                "Good morning class! Let me break this down clearly for everyone.",
+                "Hello! Let's make sure everyone understands. Where should we start?",
+                "Hi! I'll explain this step by step. Any questions as we go?"
+            ],
+            "Fellow Beginner": [
+                "Hi! I'm pretty new to this. Can someone explain it simply?",
+                "Hey everyone! I'm learning too. What exactly are we talking about?",
+                "Um, hi! This sounds complicated. Can someone help me understand?"
+            ],
+            "Budget-Conscious Manager": [
+                "Good morning. What's the ROI on this? I need to justify the cost.",
+                "Thanks for bringing this up. How much will this cost us?",
+                "Hello. I need to understand the business case here first."
+            ],
+            "Developer": [
+                "Hey. What's the tech stack? Do we have API documentation?",
+                "Alright, let's talk architecture. What are the technical requirements?",
+                "Hi. I need to see the specs. Is there a GitHub repo?"
+            ],
+            "System Administrator": [
+                "Morning. How will this impact our infrastructure? Uptime concerns?",
+                "Hello. I need to know about scalability and disaster recovery.",
+                "Hi team. What about monitoring and maintenance requirements?"
+            ],
+            "Security Expert": [
+                "Hold on. What are the security implications here? Any vulnerabilities?",
+                "Good morning. Before we proceed, let's discuss encryption and access controls.",
+                "Hi. I need to see the threat model. What's the attack surface?"
+            ],
+            "Compliance Officer": [
+                "Good morning. Does this meet our regulatory requirements?",
+                "Hello. I'll need to see the compliance documentation first.",
+                "Good day. What about GDPR, SOC 2, and data privacy?"
+            ],
+            "Value Seeker": [
+                "Hey! What's the best deal here? Any alternatives we should compare?",
+                "Hi everyone. Is there a cheaper option that does the same thing?",
+                "Hello! Let's make sure we're getting good value for money."
+            ]
+        }
+        
+        options = openings.get(self.name, ["Hello everyone, let's discuss this."])
+        return ConversationMessage(
+            speaker=self.name,
+            content=random.choice(options)
+        )
+    
+    def _generate_openai_response(self, topic: str, messages: List[ConversationMessage], 
+                                 last_msg: ConversationMessage) -> str:
+        """Generate response using OpenAI"""
+        conv_text = "\n".join([f"{m.speaker}: {m.content}" for m in messages[-5:]])
+        
+        prompt = f"""You are {self.name} in a natural conversation about: {topic}
+
+Your personality: {', '.join(self.persona_details.get('personality_traits', []))}
+
+Recent conversation:
+{conv_text}
+
+{last_msg.speaker} just said: "{last_msg.content}"
+
+Respond naturally and directly to what they said. Keep it conversational (1-2 sentences).
+If they asked a question, answer it. If they invited you, accept or decline naturally.
+Use their name when responding."""
+
+        try:
+            openai.api_key = self.api_key
+            response = openai.ChatCompletion.create(
+                model="gpt-3.5-turbo",
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.9,
+                max_tokens=150
+            )
+            return response.choices[0].message.content.strip()
+        except:
+            return self._generate_rule_response(topic, messages, last_msg)
+    
+    def _generate_rule_response(self, topic: str, messages: List[ConversationMessage],
+                               last_msg: ConversationMessage) -> str:
+        """Generate rule-based response"""
+        content_lower = last_msg.content.lower()
+        speaker = last_msg.speaker
+        
+        # Respond to questions
+        if '?' in last_msg.content:
+            return self._answer_question(speaker, content_lower)
+        
+        # Respond to invitations
+        if any(word in content_lower for word in ['join', 'want to', 'would you', 'interested']):
+            return self._respond_to_invitation(speaker)
+        
+        # Respond to positive statements
+        if any(word in content_lower for word in ['great', 'good', 'love', 'awesome', 'nice']):
+            return self._agree_positively(speaker, content_lower)
+        
+        # Respond to concerns
+        if any(word in content_lower for word in ['concern', 'worry', 'issue', 'problem']):
+            return self._address_concern(speaker)
+        
+        # Make a relevant comment
+        return self._make_comment(speaker, content_lower)
+    
+    def _answer_question(self, speaker: str, content: str) -> str:
+        """Answer a question"""
+        responses = {
+            "Tech-Savvy Early Adopter": [
+                f"Good question, {speaker}! I think it depends, but generally yes.",
+                f"{speaker}, from my experience, absolutely! It works really well.",
+                f"Hey {speaker}, I'd say yes! We could even extend it further."
+            ],
+            "Cautious Enterprise User": [
+                f"That's important, {speaker}. We'd need to evaluate that carefully first.",
+                f"{speaker}, let me think about that. We'd need proper documentation.",
+                f"Good point, {speaker}. I'd want to see more details before deciding."
+            ],
+            "Casual Consumer": [
+                f"Hmm {speaker}, I'm not totally sure. Sounds a bit complicated!",
+                f"Oh {speaker}, good question! I think so? As long as it's easy.",
+                f"{speaker}, yeah I guess! As long as it doesn't cost extra."
+            ],
+            "Power User": [
+                f"{speaker}, absolutely. And we should add more customization too.",
+                f"Good question {speaker}. Yes, but only if we can automate it.",
+                f"{speaker}, definitely. I'd also want API access for that."
+            ],
+            "Startup Founder": [
+                f"{speaker}, great question! If it helps us move faster, I'm all in.",
+                f"Love the thinking {speaker}! Yes, as long as it's scalable.",
+                f"{speaker}, absolutely! How quickly can we implement this?"
+            ],
+            "Creative Designer": [
+                f"Ooh {speaker}, good question! From a UX perspective, definitely.",
+                f"{speaker}, I love that you asked! Yes, if we design it well.",
+                f"Great minds {speaker}! Yes, and it should look beautiful too."
+            ],
+            "Tech Skeptic": [
+                f"Well {speaker}, I'm not sure. What's wrong with the current way?",
+                f"{speaker}, that's what I'm wondering too. Seems risky.",
+                f"Honestly {speaker}, I'd need more convincing before saying yes."
+            ],
+            "Helpful Friend": [
+                f"That's a great question {speaker}! Let me help you figure that out.",
+                f"{speaker}, I'm glad you asked! From what I understand, yes.",
+                f"Good thinking {speaker}! I think it could work if we're careful."
+            ],
+            "Patient Teacher": [
+                f"Excellent question {speaker}! Let me explain why that's important.",
+                f"{speaker}, I'm glad you asked. The answer is yes, and here's why...",
+                f"Great question {speaker}! Let me break that down for you."
+            ],
+            "Fellow Beginner": [
+                f"Oh {speaker}, I was wondering the same thing! I think so?",
+                f"{speaker}, good question! I'm not sure either, but it sounds right.",
+                f"Yeah {speaker}, I'm confused too. Can someone help us both?"
+            ],
+            "Budget-Conscious Manager": [
+                f"Important question {speaker}. What's the cost-benefit here?",
+                f"{speaker}, good thinking. We need to justify the expense first.",
+                f"Valid point {speaker}. How does this affect our budget?"
+            ],
+            "Developer": [
+                f"{speaker}, technically yes. But I'd need to see the API docs first.",
+                f"Good question {speaker}. Yes, if the architecture supports it.",
+                f"{speaker}, affirmative. Let me check the technical feasibility."
+            ],
+            "System Administrator": [
+                f"{speaker}, from an infrastructure standpoint, possibly. Need more details.",
+                f"Good question {speaker}. Depends on our current capacity.",
+                f"{speaker}, I'd need to review our system specs first."
+            ],
+            "Security Expert": [
+                f"{speaker}, security-wise, only if we implement proper controls.",
+                f"Critical question {speaker}. We'd need a full security audit first.",
+                f"{speaker}, potentially, but I have concerns about vulnerabilities."
+            ],
+            "Compliance Officer": [
+                f"{speaker}, from a compliance perspective, we'd need legal review.",
+                f"Important question {speaker}. Does this meet regulatory standards?",
+                f"{speaker}, possibly, but I need to verify against our policies."
+            ],
+            "Value Seeker": [
+                f"{speaker}, maybe! But is there a cheaper alternative?",
+                f"Good question {speaker}. What's the price comparison?",
+                f"{speaker}, yes, if we're getting the best deal available."
+            ]
+        }
+        return random.choice(responses.get(self.name, [f"That's a great question, {speaker}."]))
+    
+    def _respond_to_invitation(self, speaker: str) -> str:
+        """Respond to invitation"""
+        responses = {
+            "Tech-Savvy Early Adopter": [
+                f"Oh {speaker}, I'd love to! That sounds awesome. Count me in!",
+                f"Definitely {speaker}! When were you thinking?",
+                f"{speaker}, yes absolutely! Let's do it."
+            ],
+            "Cautious Enterprise User": [
+                f"Thank you {speaker}. Let me check my schedule first.",
+                f"{speaker}, I appreciate the offer. I'll need to think about it.",
+                f"That's kind of you {speaker}. I'd need more details first."
+            ],
+            "Casual Consumer": [
+                f"Oh yeah {speaker}, sounds fun! I'm in!",
+                f"{speaker}, sure why not! That'd be cool.",
+                f"Totally {speaker}! Let's do it!"
+            ],
+            "Power User": [
+                f"{speaker}, sounds good if it's efficient. I'm in.",
+                f"Sure {speaker}, as long as it doesn't take too much time.",
+                f"{speaker}, yeah I can make that work. Send details."
+            ],
+            "Startup Founder": [
+                f"{speaker}, I'm in! Let's make it happen fast!",
+                f"Love it {speaker}! Count me in. When do we start?",
+                f"{speaker}, absolutely! This could be huge for us."
+            ],
+            "Creative Designer": [
+                f"Oh {speaker}, I'd love to! That sounds really creative!",
+                f"{speaker}, yes! I can already visualize this. Exciting!",
+                f"Count me in {speaker}! Let's make it beautiful."
+            ],
+            "Tech Skeptic": [
+                f"Hmm {speaker}, I'm not sure. What's the catch?",
+                f"{speaker}, let me think about it. Sounds risky.",
+                f"I appreciate the offer {speaker}, but I'm hesitant."
+            ],
+            "Helpful Friend": [
+                f"Aw {speaker}, I'd love to help! Count me in!",
+                f"{speaker}, of course! I'm always happy to join!",
+                f"Absolutely {speaker}! Let me know how I can help."
+            ],
+            "Patient Teacher": [
+                f"Thank you {speaker}! I'd be happy to participate.",
+                f"{speaker}, yes! I can help guide everyone through this.",
+                f"I'd love to {speaker}. I can explain things as we go."
+            ],
+            "Fellow Beginner": [
+                f"Oh {speaker}, sure! As long as someone helps me understand!",
+                f"{speaker}, yeah okay! Will someone show me how?",
+                f"Um {speaker}, yes! But I might need help. Is that okay?"
+            ],
+            "Budget-Conscious Manager": [
+                f"Thanks {speaker}. What's the cost implication?",
+                f"{speaker}, possibly. I need to see the budget first.",
+                f"Appreciate it {speaker}. Let me review the numbers."
+            ],
+            "Developer": [
+                f"{speaker}, sure. Send me the specs and I'll integrate it.",
+                f"Yeah {speaker}, I can code that up. What's the timeline?",
+                f"{speaker}, affirmative. I'll need the API documentation."
+            ],
+            "System Administrator": [
+                f"Okay {speaker}, but I'll need to check system capacity first.",
+                f"{speaker}, sure. What are the infrastructure requirements?",
+                f"Thanks {speaker}. Let me verify our resources can handle it."
+            ],
+            "Security Expert": [
+                f"Hold on {speaker}. I need to assess security risks first.",
+                f"{speaker}, possibly. After a full security review.",
+                f"Thanks {speaker}, but I need to audit this first."
+            ],
+            "Compliance Officer": [
+                f"Thank you {speaker}. I'll need to verify compliance first.",
+                f"{speaker}, perhaps. Let me check regulatory requirements.",
+                f"Appreciate it {speaker}. I need legal approval first."
+            ],
+            "Value Seeker": [
+                f"{speaker}, sure! Is this the best deal available?",
+                f"Thanks {speaker}! Any discounts or promotions?",
+                f"{speaker}, okay! But let me compare prices first."
+            ]
+        }
+        return random.choice(responses.get(self.name, [f"Thanks for asking {speaker}."]))
+    
+    def _agree_positively(self, speaker: str, content: str) -> str:
+        """Express agreement"""
+        responses = {
+            "Tech-Savvy Early Adopter": [
+                f"Yes! {speaker}, I'm excited too. Let's make it happen!",
+                f"{speaker}, same here! This will be great. When can we start?",
+                f"Exactly {speaker}! I love the enthusiasm."
+            ],
+            "Cautious Enterprise User": [
+                f"I appreciate your optimism {speaker}. Let's plan carefully.",
+                f"{speaker}, that's positive. We should document the benefits.",
+                f"Good to hear {speaker}. I'd still want to proceed cautiously."
+            ],
+            "Casual Consumer": [
+                f"Right? {speaker}, it does sound cool! I'm excited too.",
+                f"{speaker}, yeah! If it's that good, I'm interested.",
+                f"Awesome {speaker}! That makes me feel better."
+            ],
+            "Power User": [
+                f"Agreed {speaker}. Now let's talk advanced features.",
+                f"{speaker}, yes. With the right setup, this could be powerful.",
+                f"True {speaker}. I'm interested in the automation potential."
+            ]
+        }
+        return random.choice(responses.get(self.name, [f"I see what you mean {speaker}."]))
+    
+    def _address_concern(self, speaker: str) -> str:
+        """Address a concern"""
+        responses = {
+            "Tech-Savvy Early Adopter": [
+                f"{speaker}, I get it, but we can work around that.",
+                f"Valid point {speaker}. Maybe we can find a solution?",
+                f"{speaker}, fair. Have you considered testing it first?"
+            ],
+            "Cautious Enterprise User": [
+                f"Thank you {speaker}. That's exactly my concern too.",
+                f"{speaker}, yes very valid. We need thorough analysis.",
+                f"I share that concern {speaker}. Let's document all risks."
+            ],
+            "Casual Consumer": [
+                f"Oh {speaker}, yeah that's worrying. Maybe there's an easier way?",
+                f"{speaker}, hmm you're right. Is there a simpler option?",
+                f"Ugh {speaker}, I didn't think of that. Too complicated!"
+            ],
+            "Power User": [
+                f"{speaker}, good catch. We need a workaround.",
+                f"Valid {speaker}. I'd script around that issue.",
+                f"{speaker}, agreed. That's why we need proper docs."
+            ]
+        }
+        return random.choice(responses.get(self.name, [f"That's worth considering {speaker}."]))
+    
+    def _make_comment(self, speaker: str, content: str) -> str:
+        """Make a relevant comment"""
+        responses = {
+            "Tech-Savvy Early Adopter": [
+                f"Building on {speaker}'s point, we could add modern features.",
+                f"{speaker} makes a good point. What about integrations?",
+                f"Interesting {speaker}. Has anyone tried this before?"
+            ],
+            "Cautious Enterprise User": [
+                f"{speaker} is right. We should also consider maintenance costs.",
+                f"Following {speaker}, what about compliance requirements?",
+                f"{speaker}, helpful context. We'll need detailed docs."
+            ],
+            "Casual Consumer": [
+                f"{speaker}, okay I'm starting to get it. Is it hard to set up?",
+                f"So {speaker}, it just works automatically? That's what I need!",
+                f"{speaker}, gotcha. But will it cost extra money?"
+            ],
+            "Power User": [
+                f"{speaker}'s right. I'd also want custom scripts.",
+                f"Adding to {speaker} - can we access this via API?",
+                f"{speaker}, true. Do we get the underlying data?"
+            ]
+        }
+        return random.choice(responses.get(self.name, [f"Good point {speaker}."]))
+
+
+class MultiAgentChat:
+    def __init__(self, api_key: str = None):
+        self.api_key = api_key
+        self.agents: List[PersonaAgent] = []
+        self.conversation_messages: List[ConversationMessage] = []
+        self.simulation_results = []
+        
+    def initialize_agents(self, selected_personas: List[str]):
+        """Initialize agents"""
+        self.agents = []
+        for persona_name in selected_personas:
+            if persona_name in PREDEFINED_PERSONAS:
+                agent = PersonaAgent(persona_name, PREDEFINED_PERSONAS[persona_name], self.api_key)
+                self.agents.append(agent)
+    
+    def run_conversation(self, topic: str, num_exchanges: int = 10) -> List[Tuple[str, str, str]]:
+        """Run conversational discussion"""
+        self.conversation_messages = []
+        conversation_output = []
+        
+        if not self.agents:
+            return []
+        
+        current_speaker_idx = 0
+        
+        for exchange in range(num_exchanges):
+            current_agent = self.agents[current_speaker_idx]
+            
+            # Generate message
+            message = current_agent.generate_response(topic, self.conversation_messages)
+            
+            # Add to conversation
+            self.conversation_messages.append(message)
+            conversation_output.append((
+                message.speaker,
+                message.content,
+                message.addressed_to or "Everyone"
+            ))
+            
+            # Determine next speaker
+            if message.addressed_to:
+                for idx, agent in enumerate(self.agents):
+                    if agent.name == message.addressed_to:
+                        current_speaker_idx = idx
+                        break
+            else:
+                current_speaker_idx = (current_speaker_idx + 1) % len(self.agents)
+            
+            time.sleep(0.05)
+        
+        self.simulation_results.append({
+            "timestamp": datetime.now().isoformat(),
+            "topic": topic,
+            "conversation": conversation_output
+        })
+        
+        return conversation_output
+
+
+def create_interface():
+    """Create Gradio interface"""
+    
+    chat_system = MultiAgentChat()
+    
+    def start_conversation(api_key, topic, context1, context2, context3, personas, num_exchanges):
+        if not topic.strip():
+            return "⚠️ Please provide a topic!", "", ""
+        
+        chat_system.api_key = api_key if api_key.strip() else None
+        
+        full_topic = f"{topic}\n\nContext: {context1} {context2} {context3}"
+        
+        chat_system.initialize_agents(personas)
+        
+        if len(chat_system.agents) < 2:
+            return "⚠️ Please select at least 2 personas!", "", ""
+        
+        conversation = chat_system.run_conversation(full_topic, num_exchanges)
+        
+        # Format output
+        chat_output = "## 💬 Conversation\n\n"
+        
+        colors = {
+            "Tech-Savvy Early Adopter": "🟦",
+            "Cautious Enterprise User": "🟨", 
+            "Casual Consumer": "🟩",
+            "Power User": "🟪"
+        }
+        
+        for speaker, content, addressed in conversation:
+            color = colors.get(speaker, "⚪")
+            chat_output += f"{color} **{speaker}**"
+            if addressed != "Everyone":
+                chat_output += f" *(to {addressed})*"
+            chat_output += f"\n> {content}\n\n"
+        
+        # Insights
+        insights = "## 📊 Analysis\n\n"
+        persona_counts = {}
+        direct_responses = 0
+        
+        for speaker, _, addressed in conversation:
+            persona_counts[speaker] = persona_counts.get(speaker, 0) + 1
+            if addressed != "Everyone":
+                direct_responses += 1
+        
+        insights += "### Participation\n"
+        for persona, count in persona_counts.items():
+            insights += f"- {persona}: {count} messages\n"
+        
+        insights += f"\n### Conversation Quality\n"
+        insights += f"- Direct responses: {direct_responses}/{len(conversation)}\n"
+        insights += f"- Natural flow achieved\n"
+        
+        # Summary
+        summary = f"## 📋 Summary\n\n"
+        summary += f"**Topic:** {topic}\n"
+        summary += f"**Participants:** {len(chat_system.agents)}\n"
+        summary += f"**Exchanges:** {len(conversation)}\n"
+        summary += f"**Direct interactions:** {direct_responses}\n"
+        
+        return chat_output, insights, summary
+    
+    def export_results():
+        if not chat_system.simulation_results:
+            return "No results to export."
+        return json.dumps(chat_system.simulation_results, indent=2)
+    
+    with gr.Blocks(title="Multi-Agent Conversational AI", theme=gr.themes.Soft()) as demo:
+        gr.Markdown("# 🤖 Multi-Agent Conversational AI")
+        gr.Markdown("Watch AI personas have real conversations!")
+        
+        with gr.Row():
+            with gr.Column(scale=1):
+                gr.Markdown("### ⚙️ Settings")
+                
+                api_key_input = gr.Textbox(
+                    label="OpenAI API Key (Optional)",
+                    type="password",
+                    placeholder="sk-..."
+                )
+                
+                gr.Markdown("### 📝 Topic")
+                
+                topic_input = gr.Textbox(
+                    label="Main Topic",
+                    lines=2,
+                    value="Let's plan a weekend cookout",
+                    placeholder="What should they discuss?"
+                )
+                
+                context1 = gr.Textbox(
+                    label="Context 1",
+                    lines=1,
+                    value="Weather is nice in Austin",
+                    placeholder="Additional details..."
+                )
+                
+                context2 = gr.Textbox(
+                    label="Context 2",
+                    lines=1,
+                    value="Coolest day this fall",
+                    placeholder="More context..."
+                )
+                
+                context3 = gr.Textbox(
+                    label="Context 3",
+                    lines=1,
+                    value="Friends gathering",
+                    placeholder="Background info..."
+                )
+                
+                gr.Markdown("### 👥 Personas (Pick 2-3)")
+                
+                persona_select = gr.CheckboxGroup(
+                    choices=list(PREDEFINED_PERSONAS.keys()),
+                    value=["Tech-Savvy Early Adopter", "Casual Consumer"],
+                    label="Who should talk?"
+                )
+                
+                exchanges_slider = gr.Slider(
+                    minimum=5,
+                    maximum=20,
+                    value=12,
+                    step=1,
+                    label="Number of exchanges"
+                )
+                
+                start_btn = gr.Button("🚀 Start", variant="primary", size="lg")
+                
+            with gr.Column(scale=2):
+                gr.Markdown("### 💬 Live Chat")
+                
+                chat_output = gr.Markdown()
+                
+                with gr.Tabs():
+                    with gr.Tab("📊 Analysis"):
+                        insights_output = gr.Markdown()
+                    with gr.Tab("📋 Summary"):
+                        summary_output = gr.Markdown()
+                    with gr.Tab("💾 Export"):
+                        export_btn = gr.Button("Export JSON")
+                        export_output = gr.Textbox(lines=10)
+        
+        start_btn.click(
+            fn=start_conversation,
+            inputs=[api_key_input, topic_input, context1, context2, context3, 
+                   persona_select, exchanges_slider],
+            outputs=[chat_output, insights_output, summary_output]
+        )
+        
+        export_btn.click(fn=export_results, outputs=export_output)
+        
+        gr.Markdown("""
+        ---
+        ### 💡 How It Works
+        - Personas respond **directly** to each other
+        - Questions get answered naturally
+        - Invitations get accepted/declined
+        - Real back-and-forth conversation
+        
+        ### 🎯 Tips
+        - Select 2-3 personas for best flow
+        - 12-15 exchanges = complete conversation
+        - Try simple topics like planning events
+        """)
+    
+    return demo
+
+
+if __name__ == "__main__":
+    demo = create_interface()
+    demo.launch()
