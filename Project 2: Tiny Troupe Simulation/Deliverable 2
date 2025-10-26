@@ -7,7 +7,7 @@ from datetime import datetime
 import random
 import os
 
-# For Hugging Face Spaces - handle OpenAI import gracefully
+# For Hugging Face Spaces - handle OpenAI import
 try:
     import openai
     OPENAI_AVAILABLE = True
