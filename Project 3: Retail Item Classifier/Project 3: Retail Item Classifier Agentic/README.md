@@ -13,7 +13,7 @@ license: mit
 
 This project demonstrates how a traditional supervised machine learning
 classifier can be extended into an **agentic system** by layering
-decision policies, tool usage, and memory on top of the model.
+decision policies, tool usage, and memory on top of the model. Hugging Face site: https://huggingface.co/spaces/annahfu1/Retail_Item_Classifier_Agentic_AI
 
 ## Files
 - `app.py` — main application and agent policy
